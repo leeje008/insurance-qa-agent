@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Environment
+.env
+.env.local
+.env.production
+.env.secrets
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Linting
+.ruff_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+pgdata/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Alembic
+alembic/versions/*.pyc
+
+# Logs
+*.log
+logs/
+
+# Data (PDF files are large, track via .gitkeep only)
+data/*.pdf
