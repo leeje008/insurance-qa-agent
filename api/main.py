@@ -3,6 +3,7 @@
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from core.logging_config import get_logger, setup_logging
 
@@ -27,17 +28,39 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    # CORS
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    # 모니터링 미들웨어
+    from api.monitoring import MonitoringMiddleware, metrics_store
+
+    application.add_middleware(MonitoringMiddleware)
+
     # 헬스 체크
     @application.get("/health")
     async def health_check():
         return {"status": "healthy"}
 
+    # 메트릭 엔드포인트
+    @application.get("/metrics")
+    async def metrics():
+        from api.cache import qa_cache
+        return {
+            "requests": metrics_store.summary(),
+            "cache": qa_cache.stats,
+        }
+
     # 라우터 등록
     from api.routers.admin import router as admin_router
     from api.routers.qa import router as qa_router
 
-    application.include_router(qa_router, prefix="/api/v1", tags=["Q&A"])
-    application.include_router(admin_router, prefix="/api/v1/admin", tags=["Admin"])
+    application.include_router(qa_router, prefix="/qa", tags=["Q&A"])
+    application.include_router(admin_router, prefix="/admin", tags=["Admin"])
 
     return application
 
