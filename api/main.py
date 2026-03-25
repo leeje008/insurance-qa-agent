@@ -28,13 +28,20 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # CORS
+    # CORS (설정 기반)
+    from api.config import settings
+
     application.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=[o.strip() for o in settings.cors_origins.split(",")],
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Rate Limiting 미들웨어
+    from api.security import RateLimitMiddleware
+
+    application.add_middleware(RateLimitMiddleware)
 
     # 모니터링 미들웨어
     from api.monitoring import MonitoringMiddleware, metrics_store

@@ -1,9 +1,9 @@
-"""api.db.models - ORM 모델 정의 (6 테이블)."""
+"""api.db.models - ORM 모델 정의 (7 테이블)."""
 
 from datetime import date, datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from api.db.database import Base
@@ -126,3 +126,31 @@ class QALog(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    retrieval_logs: Mapped[list["RetrievalLog"]] = relationship(back_populates="qa_log")
+
+
+class RetrievalLog(Base):
+    """검색 결과 로깅 테이블 (리랭킹 전후 점수 추적)."""
+
+    __tablename__ = "retrieval_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    qa_log_id: Mapped[int] = mapped_column(
+        ForeignKey("qa_logs.id"), nullable=False, comment="Q&A 로그 ID",
+    )
+    article_id: Mapped[int] = mapped_column(
+        ForeignKey("policy_articles.id"), nullable=False, comment="검색된 조항 ID",
+    )
+    rank_before_rerank: Mapped[int] = mapped_column(Integer, comment="리랭킹 전 순위")
+    rank_after_rerank: Mapped[int | None] = mapped_column(Integer, comment="리랭킹 후 순위")
+    semantic_score: Mapped[float | None] = mapped_column(Float, comment="코사인 유사도")
+    keyword_score: Mapped[float | None] = mapped_column(Float, comment="키워드 매칭 점수")
+    rrf_score: Mapped[float | None] = mapped_column(Float, comment="RRF 최종 점수")
+    rerank_score: Mapped[float | None] = mapped_column(Float, comment="리랭커 점수")
+    rerank_strategy: Mapped[str | None] = mapped_column(String(50), comment="리랭커 전략")
+    was_used_in_answer: Mapped[bool] = mapped_column(
+        Boolean, default=False, comment="답변 생성에 사용 여부",
+    )
+
+    qa_log: Mapped["QALog"] = relationship(back_populates="retrieval_logs")
+    article: Mapped["PolicyArticle"] = relationship()

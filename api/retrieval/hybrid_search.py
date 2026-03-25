@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.db.models import ArticleSubChunk, PolicyArticle
 from core.constants import (
     KEYWORD_WEIGHT,
+    RETRIEVER_OVER_FETCH_K,
     RRF_K,
     SEMANTIC_WEIGHT,
     SIMILARITY_THRESHOLD,
@@ -260,7 +261,7 @@ async def hybrid_search(
     keywords: list[str],
     *,
     product_id: int | None = None,
-    top_k: int = TOP_K_RESULTS,
+    top_k: int = RETRIEVER_OVER_FETCH_K,
 ) -> list[SearchResult]:
     """시맨틱 + 키워드 + RRF 하이브리드 검색.
 

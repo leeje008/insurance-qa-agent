@@ -134,11 +134,18 @@ if question:
     with st.chat_message("assistant"):
         with st.spinner("약관을 분석하고 있습니다..."):
             try:
+                # 최근 5턴 대화 이력을 API에 전달
+                recent = [
+                    {"role": m["role"], "content": m["content"]}
+                    for m in st.session_state.chat_history[-10:]
+                    if m["role"] in ("user", "assistant")
+                ]
                 resp = httpx.post(
                     f"{API_BASE}/qa/ask",
                     json={
                         "question": question,
                         "product_id": product_id,
+                        "history": recent,
                     },
                     timeout=120,
                 )

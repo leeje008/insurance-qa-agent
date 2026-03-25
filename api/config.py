@@ -22,5 +22,13 @@ class Settings(BaseSettings):
     app_env: str = "development"
     log_level: str = "DEBUG"
 
+    # Reranker
+    rerank_strategy: str = "cross_encoder"  # cross_encoder | llm_listwise | similarity | noop
+
+    # Security
+    api_key: str = ""  # 빈 문자열이면 인증 비활성화 (개발 모드)
+    rate_limit_rpm: int = 0  # 0이면 비활성화, 양수면 분당 요청 제한
+    cors_origins: str = "*"  # 쉼표 구분 허용 오리진
+
 
 settings = Settings()

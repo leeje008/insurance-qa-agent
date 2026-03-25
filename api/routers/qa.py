@@ -16,9 +16,10 @@ from api.schemas.qa_schema import (
     QALogResponse,
     QuestionRequest,
 )
+from api.security import verify_api_key
 from api.services import qa_service
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(verify_api_key)])
 
 
 @router.post("/ask", response_model=AnswerResponse)
@@ -28,8 +29,9 @@ async def ask(
 ) -> AnswerResponse:
     """보험약관 질의응답."""
     try:
+        history = [{"role": m.role, "content": m.content} for m in req.history]
         return await qa_service.ask_question(
-            req.question, product_id=req.product_id, session=db,
+            req.question, product_id=req.product_id, history=history, session=db,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -67,28 +69,19 @@ async def ask_stream(
 ) -> StreamingResponse:
     """SSE 스트리밍 질의응답.
 
-    각 파이프라인 단계 진행 상황을 실시간으로 전달한다.
+    각 파이프라인 노드 완료 시 실시간으로 진행 상태를 전달한다.
     """
 
     async def event_generator():
-        yield _sse("status", {"stage": "query_processing", "message": "질문 분석 중..."})
-
         try:
-            result = await qa_service.ask_question(
-                req.question, product_id=req.product_id, session=db,
-            )
-
-            yield _sse("status", {"stage": "completed", "message": "답변 생성 완료"})
-            yield _sse("answer", {
-                "answer": result.answer,
-                "confidence": result.confidence,
-                "sources": [s.model_dump() for s in result.sources],
-                "log_id": result.log_id,
-            })
+            history = [{"role": m.role, "content": m.content} for m in req.history]
+            async for chunk in qa_service.ask_question_streaming(
+                req.question, product_id=req.product_id, history=history, session=db,
+            ):
+                yield _sse(chunk["event"], chunk["data"])
         except Exception as exc:
             yield _sse("error", {"message": str(exc)})
-
-        yield _sse("done", {})
+            yield _sse("done", {})
 
     return StreamingResponse(
         event_generator(),

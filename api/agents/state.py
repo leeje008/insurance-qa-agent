@@ -14,8 +14,10 @@ class PipelineState(TypedDict, total=False):
     # 입력
     question: str
     product_id: int | None
+    conversation_history: list[dict[str, str]]
 
     # query_processor 출력
+    hyde_embedding: list[float]
     keywords: list[str]
     intent: str
     article_refs: list[str]

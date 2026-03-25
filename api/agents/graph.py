@@ -21,11 +21,26 @@ logger = logging.getLogger(__name__)
 async def query_processor(state: PipelineState) -> dict[str, Any]:
     """질문 분석 — 키워드/의도 추출 + 질문 임베딩."""
     from api.llm.ollama_client import invoke_with_fallback
-    from api.llm.prompts import QUERY_ANALYSIS_PROMPT
+    from api.llm.prompts import CONTEXTUAL_QUERY_PROMPT, HYDE_PROMPT, QUERY_ANALYSIS_PROMPT
     from api.retrieval.embedder import EmbeddingClient
 
     question = state["question"]
+    history = state.get("conversation_history", [])
     logger.info("Query Processor: %s", question[:80])
+
+    # 멀티턴 대화 맥락이 있으면 질문 재작성
+    if history:
+        history_text = "\n".join(
+            f"{m['role']}: {m['content']}" for m in history[-5:]
+        )
+        rewrite_prompt = CONTEXTUAL_QUERY_PROMPT.format(
+            history=history_text, question=question,
+        )
+        try:
+            question = (await invoke_with_fallback(rewrite_prompt)).strip()
+            logger.info("맥락 반영 재작성: %s", question[:80])
+        except Exception:
+            logger.warning("질문 재작성 실패, 원본 사용", exc_info=True)
 
     # LLM으로 질문 분석
     prompt = QUERY_ANALYSIS_PROMPT.format(question=question)
@@ -47,11 +62,23 @@ async def query_processor(state: PipelineState) -> dict[str, Any]:
             "rewritten_query": question,
         }
 
-    # 질문 임베딩
+    # 질문 임베딩 + HyDE 임베딩
     embedder = EmbeddingClient()
     try:
         rewritten = analysis.get("rewritten_query", question)
         query_embedding = await embedder.embed(rewritten)
+
+        # HyDE: 가상 약관 조항 생성 → 임베딩
+        hyde_embedding: list[float] = []
+        try:
+            hyde_text = (
+                await invoke_with_fallback(HYDE_PROMPT.format(question=question))
+            ).strip()
+            if hyde_text:
+                hyde_embedding = await embedder.embed(hyde_text)
+                logger.info("HyDE 임베딩 생성 완료 (%d chars)", len(hyde_text))
+        except Exception:
+            logger.warning("HyDE 생성 실패, query embedding만 사용", exc_info=True)
     finally:
         await embedder.close()
 
@@ -61,6 +88,7 @@ async def query_processor(state: PipelineState) -> dict[str, Any]:
         "article_refs": analysis.get("article_refs", []),
         "rewritten_query": analysis.get("rewritten_query", question),
         "query_embedding": query_embedding,
+        "hyde_embedding": hyde_embedding,
     }
 
 
@@ -69,23 +97,55 @@ async def query_processor(state: PipelineState) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 async def retriever(state: PipelineState) -> dict[str, Any]:
-    """하이브리드 검색 실행."""
+    """하이브리드 검색 실행 (query + HyDE dual embedding)."""
     from api.db.database import async_session
-    from api.retrieval.hybrid_search import hybrid_search
+    from api.retrieval.hybrid_search import hybrid_search, rrf_fusion
 
     query_embedding = state.get("query_embedding", [])
+    hyde_embedding = state.get("hyde_embedding", [])
     keywords = state.get("keywords", [])
     product_id = state.get("product_id")
 
     logger.info(
-        "Retriever: keywords=%s, product_id=%s",
-        keywords[:3], product_id,
+        "Retriever: keywords=%s, product_id=%s, hyde=%s",
+        keywords[:3], product_id, bool(hyde_embedding),
     )
 
     async with async_session() as session:
         results = await hybrid_search(
             session, query_embedding, keywords, product_id=product_id,
         )
+
+        # HyDE 임베딩이 있으면 추가 시맨틱 검색 후 RRF 병합
+        if hyde_embedding:
+            from api.retrieval.hybrid_search import semantic_search
+
+            hyde_results = await semantic_search(
+                session, hyde_embedding, product_id=product_id,
+            )
+            if hyde_results:
+                results = rrf_fusion(results, hyde_results, top_k=len(results))
+                logger.info("HyDE 검색 결과 %d건 병합", len(hyde_results))
+
+        # PRF (Pseudo-Relevance Feedback): 상위 문서에서 확장 키워드 추출 후 재검색
+        if results and keywords:
+            from api.retrieval.hybrid_search import keyword_search
+            from api.retrieval.query_expansion import expand_keywords
+
+            initial_docs = [
+                {"content": r.content, "title": r.title} for r in results[:3]
+            ]
+            expanded_kw = expand_keywords(keywords, initial_docs, max_expansion=3)
+            if len(expanded_kw) > len(keywords):
+                prf_results = await keyword_search(
+                    session, expanded_kw, product_id=product_id,
+                )
+                if prf_results:
+                    results = rrf_fusion(results, prf_results, top_k=len(results))
+                    logger.info(
+                        "PRF 확장 키워드 %d개 → %d건 병합",
+                        len(expanded_kw), len(prf_results),
+                    )
 
     documents = [
         {
@@ -102,6 +162,31 @@ async def retriever(state: PipelineState) -> dict[str, Any]:
 
     logger.info("Retriever: %d건 검색 완료", len(documents))
     return {"documents": documents}
+
+
+# ---------------------------------------------------------------------------
+# 노드 2.5: Reranker
+# ---------------------------------------------------------------------------
+
+async def reranker(state: PipelineState) -> dict[str, Any]:
+    """리랭커를 사용하여 검색 결과 재순위화."""
+    from api.retrieval.reranker import get_reranker
+
+    documents = state.get("documents", [])
+    question = state["question"]
+
+    if len(documents) <= 2:
+        logger.info("Reranker: 문서 %d건 (리랭킹 생략)", len(documents))
+        return {"documents": documents}
+
+    reranker_instance = get_reranker()
+    logger.info("Reranker: %s 전략으로 %d건 리랭킹", reranker_instance.name, len(documents))
+
+    results = await reranker_instance.rerank(question, documents)
+
+    reranked_docs = [r.document for r in results]
+    logger.info("Reranker: %d건 → %d건", len(documents), len(reranked_docs))
+    return {"documents": reranked_docs}
 
 
 # ---------------------------------------------------------------------------
@@ -232,12 +317,14 @@ def build_graph() -> StateGraph:
 
     graph.add_node("query_processor", query_processor)
     graph.add_node("retriever", retriever)
+    graph.add_node("reranker", reranker)
     graph.add_node("answer_generator", answer_generator)
     graph.add_node("answer_validator", answer_validator)
 
     graph.set_entry_point("query_processor")
     graph.add_edge("query_processor", "retriever")
-    graph.add_edge("retriever", "answer_generator")
+    graph.add_edge("retriever", "reranker")
+    graph.add_edge("reranker", "answer_generator")
     graph.add_edge("answer_generator", "answer_validator")
 
     graph.add_conditional_edges(

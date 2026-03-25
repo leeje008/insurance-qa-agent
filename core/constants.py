@@ -113,3 +113,17 @@ MAX_VALIDATION_RETRIES: int = 2
 
 # 최소 신뢰도 점수
 MIN_CONFIDENCE_SCORE: float = 0.6
+
+
+# ---------------------------------------------------------------------------
+# 리랭킹 설정
+# ---------------------------------------------------------------------------
+
+# 리랭킹 후 최종 반환 문서 수
+RERANK_TOP_K: int = 3
+
+# 리랭킹 전 초기 검색 문서 수 (over-fetch)
+RETRIEVER_OVER_FETCH_K: int = 15
+
+# Cross-Encoder 모델
+RERANK_MODEL: str = "BAAI/bge-reranker-v2-m3"

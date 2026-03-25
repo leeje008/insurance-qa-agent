@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import AsyncGenerator
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,6 +20,7 @@ async def ask_question(
     question: str,
     *,
     product_id: int | None = None,
+    history: list[dict[str, str]] | None = None,
     session: AsyncSession,
 ) -> AnswerResponse:
     """질문을 받아 RAG 파이프라인을 실행하고 답변을 반환.
@@ -55,6 +57,7 @@ async def ask_question(
     result = await pipeline.ainvoke({
         "question": question,
         "product_id": product_id,
+        "conversation_history": history or [],
         "retry_count": 0,
     })
 
@@ -96,3 +99,88 @@ async def ask_question(
         sources=sources,
         log_id=log.id,
     )
+
+
+# ---------------------------------------------------------------------------
+# 스트리밍 (LangGraph astream 기반)
+# ---------------------------------------------------------------------------
+
+_NODE_LABELS = {
+    "query_processor": ("query_processing", "질문 분석 중..."),
+    "retriever": ("retrieval", "약관 검색 중..."),
+    "reranker": ("reranking", "검색 결과 재순위화..."),
+    "answer_generator": ("generation", "답변 생성 중..."),
+    "answer_validator": ("validation", "답변 검증 중..."),
+}
+
+
+async def ask_question_streaming(
+    question: str,
+    *,
+    product_id: int | None = None,
+    history: list[dict[str, str]] | None = None,
+    session: AsyncSession,
+) -> AsyncGenerator[dict, None]:
+    """LangGraph astream을 사용하여 노드별 진행 상태를 스트리밍.
+
+    Yields:
+        {"event": "status", "data": {"stage": ..., "message": ...}}
+        {"event": "answer", "data": {"answer": ..., "confidence": ..., ...}}
+        {"event": "done", "data": {}}
+    """
+    pipeline = get_pipeline()
+
+    final_state: dict = {}
+
+    async for event in pipeline.astream(
+        {
+            "question": question,
+            "product_id": product_id,
+            "conversation_history": history or [],
+            "retry_count": 0,
+        },
+        stream_mode="updates",
+    ):
+        # event: {node_name: {updated_fields...}}
+        for node_name, updates in event.items():
+            final_state.update(updates)
+
+            stage, message = _NODE_LABELS.get(
+                node_name, (node_name, f"{node_name} 처리 중..."),
+            )
+            yield {"event": "status", "data": {"stage": stage, "message": message}}
+
+    # 최종 결과 처리
+    answer = final_state.get("answer", "답변을 생성하지 못했습니다.")
+    confidence = final_state.get("confidence", 0.0)
+    sources_json = final_state.get("sources_json", "[]")
+
+    try:
+        sources_data = json.loads(sources_json)
+        sources = [
+            {"number": s.get("number", ""), "title": s.get("title", "")}
+            for s in sources_data
+        ]
+    except (json.JSONDecodeError, TypeError):
+        sources = []
+
+    # 로그 저장
+    log = await qa_log_repo.create_qa_log(
+        session,
+        question=question,
+        answer=answer,
+        sources_json=sources_json,
+        confidence=confidence,
+    )
+    await session.commit()
+
+    yield {
+        "event": "answer",
+        "data": {
+            "answer": answer,
+            "confidence": confidence,
+            "sources": sources,
+            "log_id": log.id,
+        },
+    }
+    yield {"event": "done", "data": {}}

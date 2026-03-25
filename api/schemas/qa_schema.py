@@ -7,11 +7,21 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 
+class ConversationMessage(BaseModel):
+    """대화 메시지."""
+
+    role: str = Field(..., description="'user' 또는 'assistant'")
+    content: str = Field(..., max_length=2000, description="메시지 내용")
+
+
 class QuestionRequest(BaseModel):
     """Q&A 질문 요청."""
 
     question: str = Field(..., min_length=2, max_length=1000, description="사용자 질문")
     product_id: int | None = Field(None, description="특정 상품 ID로 제한 (없으면 전체)")
+    history: list[ConversationMessage] = Field(
+        default_factory=list, max_length=10, description="이전 대화 내역 (최대 10턴)",
+    )
 
 
 class SourceInfo(BaseModel):
